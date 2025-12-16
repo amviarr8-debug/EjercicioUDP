@@ -10,7 +10,7 @@ import java.net.*;
 public class ServidorUDP {
     
     // Configuración
-    private static final int PORT = 9876; 
+    private static final int PORT = 9877;
 
     public static void main(String[] args) {
         

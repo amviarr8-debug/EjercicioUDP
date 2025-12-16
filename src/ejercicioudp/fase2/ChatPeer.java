@@ -1,53 +1,53 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
 package ejercicioudp.fase2;
 
 import java.io.IOException;
 import java.net.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Scanner;
 
 public class ChatPeer {
-    
-    private static final int PORT = 9876; 
-    private static final String BROADCAST_IP = "172.16.8.255";
+
+    // Configuración
+    private static final int PORT = 9877;
+    private static final String BROADCAST_IP = "10.59.43.255";
+    private static String miNombreChat;
 
     private static List<InetSocketAddress> amigos = new ArrayList<>();
-    private static InetAddress miIP; // Para filtrar auto-respuestas
+    private static InetAddress miIP; // Para Filtrado
 
     public static void main(String[] args) {
-        
+        Scanner scanner = new Scanner(System.in);
+        System.out.print("Introduce tu nombre para el Chat: ");
+        miNombreChat = scanner.nextLine();
         try {
-            // Obtener mi propia IP para el filtrado (Fase 2)
-            miIP = InetAddress.getLocalHost(); 
-            System.out.println("Mi IP: " + miIP.getHostAddress());
-            
-            // Iniciar el hilo de escucha continua
+            miIP = InetAddress.getLocalHost();
+            System.out.println("--- INICIANDO CHAT PEER ---");
+            System.out.println("Mi IP Local: " + miIP.getHostAddress());
+
+            // 1. Iniciar el hilo de escucha continua (El Servidor)
             Thread listenerThread = new Thread(new ListenerTask());
             listenerThread.start();
-            
-            // Iniciar el cliente/enviador (para enviar el broadcast)
+
+            // 2. Iniciar el cliente/enviador (Descubrimiento y Bucle de Chat)
             iniciarChatClient(listenerThread);
-            
+
         } catch (UnknownHostException e) {
             System.err.println("Error al obtener la IP local: " + e.getMessage());
         }
     }
-    
-    // --- TAREA DE ESCUCHA (SERVIDOR) ---
+
     static class ListenerTask implements Runnable {
         private DatagramSocket serverSocket;
-        
+
         @Override
         public void run() {
             try {
                 serverSocket = new DatagramSocket(PORT);
-                System.out.println("Servidor/Peer iniciado en el puerto " + PORT + ". Escuchando...");
+                System.out.println("Servidor/Peer escuchando en puerto " + PORT + "...");
 
                 byte[] receiveData = new byte[1024];
-                
+
                 while (true) {
                     DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
                     serverSocket.receive(receivePacket);
@@ -55,16 +55,17 @@ public class ChatPeer {
                     String tramaRecibida = new String(receivePacket.getData(), 0, receivePacket.getLength()).trim();
                     InetAddress senderIP = receivePacket.getAddress();
                     int senderPort = receivePacket.getPort();
-                    
-                    // 1. Filtrado (Fase 2): Ignorar paquetes si vienen de mí mismo
-                    if (senderIP.equals(miIP)) {
-                        continue; 
+
+                    // 1. Filtrado (AP 3.7): Ignorar paquetes si vienen de mí mismo
+                    if (senderIP.equals(miIP) || senderIP.isLoopbackAddress()) {
+                        continue;
                     }
-                    
+
                     procesarTrama(tramaRecibida, senderIP, senderPort, serverSocket);
                 }
             } catch (SocketException e) {
-                System.err.println("Listener Socket cerrado.");
+                // Esto es normal cuando el socket se cierra al terminar el programa
+                System.out.println("\n[LISTENER] Socket cerrado. Terminando escucha.");
             } catch (IOException e) {
                 System.err.println("Error de I/O en Listener: " + e.getMessage());
             } finally {
@@ -73,15 +74,16 @@ public class ChatPeer {
                 }
             }
         }
-        
-        // --- PROCESAMIENTO Y VALIDACIÓN ROBUSTA (Fase 1) ---
+
         private void procesarTrama(String trama, InetAddress ip, int port, DatagramSocket socket) throws IOException {
+
+            // Validación Robusta (AP 3.6): @...#...# (o similar, adaptado al nuevo chat)
             if (trama.startsWith("@") && trama.endsWith("@")) {
                 String contenido = trama.substring(1, trama.length() - 1);
-                
+
                 if (contenido.contains("#")) {
-                    String[] partes = contenido.split("#", 2); 
-                    String comando = partes[0].toLowerCase();
+                    String[] partes = contenido.split("#", 2);
+                    String comando = partes[0].trim().toLowerCase();
                     String dato = partes[1];
 
                     InetSocketAddress senderAddress = new InetSocketAddress(ip, port);
@@ -89,96 +91,119 @@ public class ChatPeer {
                     switch (comando) {
                         case "hola":
                             // Fase 1: Saludo
-                            System.out.println("\n[SALA]: Trama Saludo OK! Cliente: " + dato);
-                            
-                            // Responder al cliente (Fase 1)
-                            String respuesta = "@ok#Bienvenido@";
-                            enviarRespuesta(socket, respuesta, ip, port);
+                            System.out.println("\n[PROTO]: Saludo recibido de: " + dato);
+                            enviarRespuesta(socket, "@ok#" + miNombreChat + "@", ip, port);
                             break;
-                            
+
                         case "descub":
-                            // Fase 2: Respuesta al Broadcast de descubrimiento
-                            System.out.println("\n[SALA]: Recibido Broadcast de Descubrimiento de: " + dato);
-                            
-                            // Agregar a la lista de amigos (si no está ya)
-                            if (!amigos.contains(senderAddress)) {
-                                amigos.add(senderAddress);
-                                System.out.println("--> Nuevo amigo agregado: " + ip.getHostAddress());
-                            }
-                            
-                            // Responder directamente al remitente del broadcast
-                            String respDescub = "@amigo#mi_nombre_de_chat@"; // El servidor también se presenta
+
+                            agregarAmigo(senderAddress, dato);
+
+                            String respDescub = "@amigo#" + miNombreChat + "@";
                             enviarRespuesta(socket, respDescub, ip, port);
                             break;
-                            
+
                         case "amigo":
-                            // Recibida una respuesta al broadcast (Fase 2)
-                            if (!amigos.contains(senderAddress)) {
-                                amigos.add(senderAddress);
-                                System.out.println("\n[DISCOVERY]: Encontrado nuevo par: " + dato + " (" + ip.getHostAddress() + ")");
-                                System.out.println("Lista de Amigos actual: " + amigos.size());
-                            }
+
+                            agregarAmigo(senderAddress, dato);
                             break;
-                            
+
+                        case "msg":
+
+                            System.out.println("\n[CHAT] " + dato);
+                            System.out.print("[" + miNombreChat + "]> ");
+                            break;
+
                         default:
-                            System.out.println("[ERROR]: Comando desconocido: " + comando + ". Ignorando...");
+                            System.out.println("[LOG ERROR]: Comando desconocido: " + comando + ". Ignorando...");
                     }
                 } else {
-                    System.out.println("[ERROR]: Trama incorrecta (falta #). Ignorando: " + trama);
+                    System.out.println("[LOG ERROR]: Trama incorrecta (falta #). Ignorando: " + trama);
                 }
             } else {
-                // Trama basura (ej. HOLA, 123)
-                System.out.println("[ERROR]: Trama incorrecta (falta @). Ignorando: " + trama);
+                System.out.println("[LOG ERROR]: Trama incorrecta (falta @). Ignorando: " + trama);
             }
         }
-        
+
         private void enviarRespuesta(DatagramSocket socket, String mensaje, InetAddress ip, int port) throws IOException {
             byte[] sendData = mensaje.getBytes();
             DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, ip, port);
             socket.send(sendPacket);
-            System.out.println("Enviada respuesta: " + mensaje + " a " + ip.getHostAddress());
+        }
+
+        private void agregarAmigo(InetSocketAddress address, String nombre) {
+            if (!amigos.contains(address)) {
+                amigos.add(address);
+                System.out.println("\n[DISCOVERY]: Encontrado nuevo par: " + nombre + " (" + address.getAddress().getHostAddress() + ")");
+                System.out.println("Amigos actuales: " + amigos.size());
+            }
         }
     }
-    
-    // --- TAREA DE ENVÍO (CLIENTE) ---
-    private static void iniciarChatClient(Thread listenerThread) {
-        // Lógica para enviar mensajes y Broadcasts
-        try (DatagramSocket clientSocket = new DatagramSocket()) {
-            // Es bueno poner timeout aquí también para las pruebas de fase 1,
-            // pero para el broadcast no es estrictamente necesario, ya que solo es un envío.
-            // Para la Fase 1, el cliente debe esperar la respuesta:
-            
-            // clientSocket.setSoTimeout(5000); // Se usó en el ejemplo anterior si se quiere testear F1
 
-            System.out.println("\n--- MODO CHAT/CLIENTE ---");
-            
-            // *** FASE 2: BROADCAST DE DESCUBRIMIENTO ***
-            System.out.println("\n[DISCOVERY]: Enviando Broadcast...");
-            String broadcastMsg = "@descub#mi_nombre_de_chat@"; // Usamos 'descub' como comando
+
+    private static void iniciarChatClient(Thread listenerThread) {
+
+        try (DatagramSocket clientSocket = new DatagramSocket();
+             Scanner scanner = new Scanner(System.in)) {
+
+            // Establecer que el socket puede enviar Broadcasts (necesario en algunos OS)
+            clientSocket.setBroadcast(true);
+
+
+            System.out.println("\n--- INICIANDO DESCUBRIMIENTO ---");
+            String broadcastMsg = "@descub#" + miNombreChat + "@";
+
             byte[] sendData = broadcastMsg.getBytes();
-            
-            // La IP de broadcast debe ser la última de tu segmento de red (ej. 172.16.8.255)
             InetAddress broadcastIP = InetAddress.getByName(BROADCAST_IP);
-            
+
             DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, broadcastIP, PORT);
             clientSocket.send(sendPacket);
-            System.out.println("Broadcast de descubrimiento enviado a " + BROADCAST_IP + ":" + PORT);
+            System.out.println("Enviado Broadcast de descubrimiento a la red.");
 
-            // Se esperan unos segundos para que lleguen las respuestas de 'amigo' (Fase 2)
-            Thread.sleep(2000); 
-            
-            // Aquí puedes imprimir la lista de amigos descubiertos
+
+            Thread.sleep(1000);
+
             System.out.println("\n*** Listado de Amigos Encontrados (" + amigos.size() + ") ***");
             for (InetSocketAddress friend : amigos) {
-                System.out.println(" -> " + friend.getAddress().getHostAddress() + ":" + friend.getPort());
+                System.out.println(" -> Par en: " + friend.getAddress().getHostAddress());
             }
-            
-            // ... Aquí iría el bucle para enviar mensajes de chat reales ...
-            
+
+
+            System.out.println("\n--- CHAT INICIADO ---");
+            System.out.println("Escribe tu mensaje. Escribe 'salir' para terminar.");
+
+            while (!Thread.interrupted()) {
+                System.out.print("[" + miNombreChat + "]> ");
+                String mensajeUsuario = scanner.nextLine();
+
+                if (mensajeUsuario.equalsIgnoreCase("salir")) {
+                    break;
+                }
+
+
+                String tramaChat = "@msg#" + miNombreChat + ": " + mensajeUsuario + "@";
+                byte[] chatData = tramaChat.getBytes();
+
+
+                if (amigos.isEmpty()) {
+                    System.out.println("[INFO]: No hay interlocutores. Intenta ejecutar otro ChatPeer.");
+                }
+
+                for (InetSocketAddress friend : amigos) {
+                    DatagramPacket chatPacket = new DatagramPacket(chatData, chatData.length, friend.getAddress(), friend.getPort());
+                    clientSocket.send(chatPacket);
+                }
+            }
+
         } catch (IOException e) {
             System.err.println("Error de I/O en Cliente: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            System.out.println("Saliendo del chat. Deteniendo Listener.");
+            if (listenerThread != null) {
+                listenerThread.interrupt();
+            }
         }
     }
 }
